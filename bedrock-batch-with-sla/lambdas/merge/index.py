@@ -1,0 +1,147 @@
+import json
+import logging
+import os
+import sys
+from datetime import datetime, timezone
+import boto3
+
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from common.boto_config import RETRY_CONFIG
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+s3 = boto3.client('s3', config=RETRY_CONFIG)
+
+OUTPUT_BUCKET_NAME = os.environ['OUTPUT_BUCKET_NAME']
+
+
+def handler(event, context):
+    """
+    Merges batch-partial output + on-demand results into unified output.
+    Ensures one result per recordId.
+    """
+    try:
+        logger.info(json.dumps({'event': 'merge_invoked', 'input': event}))
+
+        job_id = event['jobId']
+        output_uri = event['outputUri']
+
+        # Parse S3 URI
+        output_bucket, output_prefix = parse_s3_uri(output_uri)
+
+        # Read batch output (if any)
+        batch_results = {}
+        try:
+            output_prefix_clean = output_prefix.rstrip('/')
+            response = s3.list_objects_v2(
+                Bucket=output_bucket,
+                Prefix=output_prefix_clean
+            )
+
+            for obj in response.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('.jsonl.out'):
+                    records = read_jsonl_from_s3(output_bucket, key)
+                    for rec in records:
+                        if 'recordId' in rec:
+                            batch_results[rec['recordId']] = rec
+
+            logger.info(json.dumps({
+                'event': 'batch_results_loaded',
+                'count': len(batch_results)
+            }))
+        except Exception as e:
+            logger.warning(json.dumps({
+                'event': 'batch_results_not_found',
+                'error': str(e)
+            }))
+
+        # Read on-demand results (from Distributed Map ResultWriter)
+        ondemand_results = {}
+        try:
+            ondemand_prefix = f"ondemand-results/{job_id}/"
+            response = s3.list_objects_v2(
+                Bucket=OUTPUT_BUCKET_NAME,
+                Prefix=ondemand_prefix
+            )
+
+            for obj in response.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('.json'):
+                    # ResultWriter creates JSON files (not JSONL)
+                    records = read_json_from_s3(OUTPUT_BUCKET_NAME, key)
+                    # Handle both single record and array
+                    if isinstance(records, list):
+                        for rec in records:
+                            if 'recordId' in rec:
+                                ondemand_results[rec['recordId']] = rec
+                    elif isinstance(records, dict) and 'recordId' in records:
+                        ondemand_results[records['recordId']] = records
+
+            logger.info(json.dumps({
+                'event': 'ondemand_results_loaded',
+                'count': len(ondemand_results)
+            }))
+        except Exception as e:
+            logger.warning(json.dumps({
+                'event': 'ondemand_results_not_found',
+                'error': str(e)
+            }))
+
+        # Merge results (on-demand takes precedence for duplicates)
+        merged_results = {**batch_results, **ondemand_results}
+
+        logger.info(json.dumps({
+            'event': 'merge_complete',
+            'batch_count': len(batch_results),
+            'ondemand_count': len(ondemand_results),
+            'merged_count': len(merged_results)
+        }))
+
+        # Write merged output
+        merged_key = f"merged-output/{job_id}/results.jsonl"
+        if merged_results:
+            write_jsonl_to_s3(OUTPUT_BUCKET_NAME, merged_key, list(merged_results.values()))
+
+        return {
+            'statusCode': 200,
+            'mergedKey': merged_key,
+            'totalRecords': len(merged_results),
+            'batchRecords': len(batch_results),
+            'ondemandRecords': len(ondemand_results)
+        }
+
+    except Exception as e:
+        logger.error(json.dumps({
+            'event': 'merge_error',
+            'error': str(e),
+            'error_type': type(e).__name__
+        }))
+        raise
+
+
+def parse_s3_uri(uri):
+    """Parse s3://bucket/key into bucket and key."""
+    parts = uri.replace('s3://', '').split('/', 1)
+    return parts[0], parts[1] if len(parts) > 1 else ''
+
+
+def read_json_from_s3(bucket, key):
+    """Read JSON file from S3."""
+    response = s3.get_object(Bucket=bucket, Key=key)
+    return json.loads(response['Body'].read().decode('utf-8'))
+
+
+def read_jsonl_from_s3(bucket, key):
+    """Read JSONL file from S3."""
+    response = s3.get_object(Bucket=bucket, Key=key)
+    content = response['Body'].read().decode('utf-8')
+    return [json.loads(line) for line in content.strip().split('\n') if line]
+
+
+def write_jsonl_to_s3(bucket, key, records):
+    """Write JSONL file to S3."""
+    content = '\n'.join(json.dumps(rec) for rec in records)
+    s3.put_object(Bucket=bucket, Key=key, Body=content.encode('utf-8'))
