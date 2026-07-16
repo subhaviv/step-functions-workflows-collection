@@ -4,11 +4,11 @@ set -e
 # Bedrock Batch SLA Fallback - Integration Test Script
 # Tests all three fallback scenarios
 
-export AWS_PROFILE=quicksuite
-REGION="us-east-1"
-STATE_MACHINE_ARN="arn:aws:states:us-east-1:722396409081:stateMachine:bedrock-batch-sla-fallback"
-INPUT_BUCKET="bedrock-batch-sla-input-722396409081"
-OUTPUT_BUCKET="bedrock-batch-sla-output-722396409081"
+REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+STATE_MACHINE_ARN="arn:aws:states:${REGION}:${ACCOUNT_ID}:stateMachine:bedrock-batch-sla-fallback"
+INPUT_BUCKET="bedrock-batch-sla-input-${ACCOUNT_ID}"
+OUTPUT_BUCKET="bedrock-batch-sla-output-${ACCOUNT_ID}"
 JOBS_TABLE="bedrock-batch-sla-jobs"
 ALARM_NAME="bedrock-batch-sla-stuck-job"
 
