@@ -75,7 +75,7 @@ class MonitoringConstruct(Construct):
             event_pattern=events.EventPattern(
                 source=["aws.bedrock"],
                 detail_type=["Batch Inference Job State Change"],
-                detail={"status": ["Completed", "Failed", "Expired"]},
+                detail={"status": ["Completed", "Failed", "Expired", "PartiallyCompleted"]},
             ),
         )
 

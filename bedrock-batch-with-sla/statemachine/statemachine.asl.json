@@ -113,6 +113,10 @@
             },
             {
               "Variable": "$.resumeResult.status",
+              "StringEquals": "PartiallyCompleted"
+            },
+            {
+              "Variable": "$.resumeResult.status",
               "StringEquals": "FallbackRequested"
             }
           ],
