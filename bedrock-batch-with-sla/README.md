@@ -2,7 +2,7 @@
 
 This workflow runs Amazon Bedrock **batch inference** as the primary (cost-effective) path, with **automatic fallback to on-demand inference** when an SLA deadline is at risk.
 
-Learn more about this workflow at Step Functions workflows collection: https://serverlessland.com/workflows/bedrock-batch-with-sla
+Learn more about this workflow at the AWS Step Functions workflows collection: https://serverlessland.com/workflows/bedrock-batch-with-sla
 
 Important: this application uses various AWS services and there are costs associated with these services after the Free Tier usage - please see the [AWS Pricing page](https://aws.amazon.com/pricing/) for details. You are responsible for any AWS costs incurred. No warranty is implied in this example.
 
