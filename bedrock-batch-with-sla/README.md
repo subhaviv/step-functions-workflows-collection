@@ -1,4 +1,4 @@
-# Bedrock Batch Inference with On-Demand SLA Fallback
+# Amazon Bedrock Batch Inference with On-Demand SLA Fallback
 
 This workflow runs Amazon Bedrock **batch inference** as the primary (cost-effective) path, with **automatic fallback to on-demand inference** when an SLA deadline is at risk.
 
