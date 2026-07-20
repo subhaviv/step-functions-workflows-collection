@@ -35,18 +35,15 @@ def handler(event, context):
         batch_results = {}
         try:
             output_prefix_clean = output_prefix.rstrip('/')
-            response = s3.list_objects_v2(
-                Bucket=output_bucket,
-                Prefix=output_prefix_clean
-            )
-
-            for obj in response.get('Contents', []):
-                key = obj['Key']
-                if key.endswith('.jsonl.out'):
-                    records = read_jsonl_from_s3(output_bucket, key)
-                    for rec in records:
-                        if 'recordId' in rec:
-                            batch_results[rec['recordId']] = rec
+            paginator = s3.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=output_bucket, Prefix=output_prefix_clean):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    if key.endswith('.jsonl.out'):
+                        records = read_jsonl_from_s3(output_bucket, key)
+                        for rec in records:
+                            if 'recordId' in rec:
+                                batch_results[rec['recordId']] = rec
 
             logger.info(json.dumps({
                 'event': 'batch_results_loaded',
@@ -59,26 +56,35 @@ def handler(event, context):
             }))
 
         # Read on-demand results (from Distributed Map ResultWriter)
+        # ResultWriter writes child execution envelopes: [{ExecutionArn, Input, Output, Status}, ...]
+        # Output is a JSON string containing the state machine result for that item.
         ondemand_results = {}
         try:
             ondemand_prefix = f"ondemand-results/{job_id}/"
-            response = s3.list_objects_v2(
-                Bucket=OUTPUT_BUCKET_NAME,
-                Prefix=ondemand_prefix
-            )
-
-            for obj in response.get('Contents', []):
-                key = obj['Key']
-                if key.endswith('.json'):
-                    # ResultWriter creates JSON files (not JSONL)
-                    records = read_json_from_s3(OUTPUT_BUCKET_NAME, key)
-                    # Handle both single record and array
-                    if isinstance(records, list):
-                        for rec in records:
-                            if 'recordId' in rec:
-                                ondemand_results[rec['recordId']] = rec
-                    elif isinstance(records, dict) and 'recordId' in records:
-                        ondemand_results[records['recordId']] = records
+            paginator = s3.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=OUTPUT_BUCKET_NAME, Prefix=ondemand_prefix):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    if not key.endswith('.json') or key.endswith('manifest.json'):
+                        continue
+                    executions = read_json_from_s3(OUTPUT_BUCKET_NAME, key)
+                    if not isinstance(executions, list):
+                        executions = [executions]
+                    for execution in executions:
+                        if execution.get('Status') != 'SUCCEEDED':
+                            continue
+                        output_str = execution.get('Output')
+                        if not output_str:
+                            continue
+                        result = json.loads(output_str)
+                        # result contains modelOutput.recordId and modelOutput.body
+                        model_output = result.get('modelOutput', {})
+                        record_id = model_output.get('recordId')
+                        if record_id:
+                            ondemand_results[record_id] = {
+                                'recordId': record_id,
+                                'modelOutput': model_output.get('body', {})
+                            }
 
             logger.info(json.dumps({
                 'event': 'ondemand_results_loaded',
@@ -100,10 +106,9 @@ def handler(event, context):
             'merged_count': len(merged_results)
         }))
 
-        # Write merged output
+        # Write merged output (always write so downstream consumers can rely on the key existing)
         merged_key = f"merged-output/{job_id}/results.jsonl"
-        if merged_results:
-            write_jsonl_to_s3(OUTPUT_BUCKET_NAME, merged_key, list(merged_results.values()))
+        write_jsonl_to_s3(OUTPUT_BUCKET_NAME, merged_key, list(merged_results.values()))
 
         return {
             'statusCode': 200,

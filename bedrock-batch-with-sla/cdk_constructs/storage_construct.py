@@ -32,10 +32,11 @@ class StorageConstruct(Construct):
             partition_key=dynamodb.Attribute(name="JobId", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=removal_policy,
-            time_to_live_attribute="TTL",
+            # No TTL — retain job records for analytics. Add based on your retention policy.
             point_in_time_recovery=False,
         )
 
+        # StatusIndex and ModelIdIndex support frontend queries (e.g. list jobs by status or model)
         self.jobs_table.add_global_secondary_index(
             index_name="StatusIndex",
             partition_key=dynamodb.Attribute(name="Status", type=dynamodb.AttributeType.STRING),

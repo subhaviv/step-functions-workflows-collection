@@ -2,20 +2,24 @@
 set -e
 
 # Bedrock Batch SLA Fallback - Integration Test Script
-# Tests all three fallback scenarios
+# Tests all three fallback scenarios end-to-end, including output verification.
 
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --profile "${AWS_PROFILE:-default}")
 STATE_MACHINE_ARN="arn:aws:states:${REGION}:${ACCOUNT_ID}:stateMachine:bedrock-batch-sla-fallback"
 INPUT_BUCKET="bedrock-batch-sla-input-${ACCOUNT_ID}"
 OUTPUT_BUCKET="bedrock-batch-sla-output-${ACCOUNT_ID}"
 JOBS_TABLE="bedrock-batch-sla-jobs"
 ALARM_NAME="bedrock-batch-sla-stuck-job"
 
-echo "🧪 Bedrock Batch SLA Fallback - Integration Tests"
+TESTS_PASSED=0
+TESTS_FAILED=0
+FAILED_TESTS=""
+
+echo "Bedrock Batch SLA Fallback - Integration Tests"
 echo "=================================================="
 echo ""
-echo "⚠️  WARNING: These tests will:"
+echo "WARNING: These tests will:"
 echo "   - Deploy CDK stack with modified settings"
 echo "   - Trigger CloudWatch alarms"
 echo "   - Temporarily modify IAM permissions"
@@ -28,127 +32,172 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 1
 fi
 
+# =============================================================================
 # Helper functions
-wait_for_execution_state() {
+# =============================================================================
+
+# Count records in the local sample input file
+input_record_count() {
+    grep -c . sample/input.jsonl
+}
+
+# Wait for a Step Functions execution to reach a terminal state.
+# Writes progress to stderr; writes final status word to stdout.
+wait_for_terminal() {
     local exec_arn=$1
-    local expected_state=$2
-    local max_wait=${3:-300}
+    local max_wait=${2:-900}
     local elapsed=0
 
-    echo "⏳ Waiting for execution to reach $expected_state (max ${max_wait}s)..."
+    echo "Waiting for execution to reach terminal state (max ${max_wait}s)..." >&2
     while [ $elapsed -lt $max_wait ]; do
         STATUS=$(aws stepfunctions describe-execution \
             --execution-arn "$exec_arn" \
             --query 'status' \
             --output text 2>/dev/null || echo "UNKNOWN")
 
-        if [ "$STATUS" = "$expected_state" ]; then
-            echo "✅ Execution reached $expected_state"
-            return 0
-        elif [ "$STATUS" = "FAILED" ]; then
-            echo "❌ Execution failed unexpectedly"
-            return 1
-        fi
+        case "$STATUS" in
+            SUCCEEDED|FAILED|TIMED_OUT|ABORTED)
+                echo "   Execution reached: $STATUS" >&2
+                echo "$STATUS"
+                return 0
+                ;;
+        esac
 
-        sleep 5
-        elapsed=$((elapsed + 5))
+        sleep 10
+        elapsed=$((elapsed + 10))
+        echo "   [$elapsed s] status: $STATUS" >&2
     done
 
-    echo "⏰ Timeout waiting for $expected_state"
+    echo "   Timed out waiting for terminal state" >&2
+    echo "TIMED_OUT"
     return 1
 }
 
-get_latest_execution() {
-    aws stepfunctions list-executions \
-        --state-machine-arn "$STATE_MACHINE_ARN" \
-        --max-results 1 \
-        --output json | jq -r '.executions[0].executionArn'
+# Check that the merged output exists in S3 and contains exactly expected_count records
+verify_output() {
+    local job_id=$1
+    local expected_count=$2
+
+    local merged_key="merged-output/${job_id}/results.jsonl"
+    echo "Verifying output: s3://${OUTPUT_BUCKET}/${merged_key}"
+
+    if ! aws s3 ls "s3://${OUTPUT_BUCKET}/${merged_key}" > /dev/null 2>&1; then
+        echo "  FAIL: merged output file not found at ${merged_key}"
+        return 1
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    aws s3 cp "s3://${OUTPUT_BUCKET}/${merged_key}" "$tmp" > /dev/null 2>&1
+    local actual_count
+    actual_count=$(grep -c . "$tmp" || true)
+    rm -f "$tmp"
+
+    echo "  Expected records: $expected_count, Got: $actual_count"
+    if [ "$actual_count" -eq "$expected_count" ]; then
+        echo "  PASS: record count matches"
+        return 0
+    else
+        echo "  FAIL: record count mismatch"
+        return 1
+    fi
 }
 
-check_fallback_path() {
+# Extract job_id from execution ARN (execution name is batch-job-{uuid})
+job_id_from_exec_arn() {
     local exec_arn=$1
-    echo "🔍 Checking if fallback path was executed..."
+    echo "$exec_arn" | grep -oE 'batch-job-[a-f0-9-]{36}' | sed 's/batch-job-//'
+}
+
+check_fallback_states() {
+    local exec_arn=$1
 
     HISTORY=$(aws stepfunctions get-execution-history \
         --execution-arn "$exec_arn" \
         --output json)
 
-    # Check for key fallback states
-    FALLBACK_ENTRY=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "FallbackEntry")] | length')
-    RECONCILE=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "ReconcileRecords")] | length')
-    REDRIVE=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "RedriveOnDemand")] | length')
-    MERGE=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "MergeResults")] | length')
+    local fallback
+    fallback=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "FallbackEntry")] | length')
+    local reconcile
+    reconcile=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "ReconcileRecords")] | length')
+    local redrive
+    redrive=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "RedriveOnDemand")] | length')
+    local merge
+    merge=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "MergeResults")] | length')
 
-    if [ "$FALLBACK_ENTRY" -gt 0 ]; then
-        echo "  ✅ FallbackEntry state reached"
-    else
-        echo "  ❌ FallbackEntry state NOT reached"
-        return 1
-    fi
+    echo "  FallbackEntry:   $fallback"
+    echo "  ReconcileRecords: $reconcile"
+    echo "  RedriveOnDemand: $redrive"
+    echo "  MergeResults:    $merge"
 
-    if [ "$RECONCILE" -gt 0 ]; then
-        echo "  ✅ ReconcileRecords executed"
-    fi
+    [ "$fallback" -gt 0 ] && [ "$reconcile" -gt 0 ] && [ "$redrive" -gt 0 ] && [ "$merge" -gt 0 ]
+}
 
-    if [ "$MERGE" -gt 0 ]; then
-        echo "  ✅ MergeResults executed"
-    fi
+pass_test() {
+    local name=$1
+    echo "PASSED: $name"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+}
 
-    return 0
+fail_test() {
+    local name=$1
+    local reason=$2
+    echo "FAILED: $name — $reason"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    FAILED_TESTS="$FAILED_TESTS\n  - $name: $reason"
 }
 
 restore_normal_config() {
-    echo "🔄 Restoring normal configuration..."
-    npx cdk deploy --require-approval never > /dev/null 2>&1
+    echo "Restoring normal configuration..."
+    npx cdk deploy --profile "${AWS_PROFILE:-default}" --require-approval never > /dev/null 2>&1
+    echo "Restored."
 }
 
 # =============================================================================
 # TEST 1: Timeout Fallback
 # =============================================================================
 echo ""
-echo "═══════════════════════════════════════════════════════════════"
+echo "==================================================================="
 echo "TEST 1: Timeout Fallback (Step Functions timeout)"
-echo "═══════════════════════════════════════════════════════════════"
-echo ""
+echo "==================================================================="
 
-echo "📝 Step 1: Deploy with very short SLA (2 minutes)..."
-npx cdk deploy -c slaTotalMinutes=2 --require-approval never > /dev/null 2>&1
-echo "✅ Deployed with 2-minute SLA"
+RECORD_COUNT=$(input_record_count)
 
-echo ""
-echo "📤 Step 2: Upload test file..."
-TEST_FILE="test-timeout-$(date +%s).jsonl"
-aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" > /dev/null 2>&1
-echo "✅ Uploaded: $TEST_FILE"
+echo "Step 1: Deploy with 2-minute SLA..."
+npx cdk deploy --profile "${AWS_PROFILE:-default}" -c slaTotalMinutes=2 --require-approval never > /dev/null 2>&1
+echo "   Deployed with 2-minute SLA (batch cutoff ~60s)"
 
-echo ""
-echo "⏱️  Step 3: Wait for timeout (WaitForBatchCompletion should timeout in ~60s)..."
+echo "Step 2: Upload sample/input.jsonl ($RECORD_COUNT records)..."
+TEST_KEY="test-timeout-$(date +%s).jsonl"
+aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_KEY" > /dev/null 2>&1
+echo "   Uploaded: $TEST_KEY"
+
+echo "Step 3: Get execution ARN..."
 sleep 10
-EXEC_ARN=$(get_latest_execution)
+EXEC_ARN=$(aws stepfunctions list-executions \
+    --state-machine-arn "$STATE_MACHINE_ARN" \
+    --max-results 1 \
+    --output json | jq -r '.executions[0].executionArn')
 echo "   Execution: $EXEC_ARN"
 
-# Wait up to 120 seconds for timeout to trigger fallback
-sleep 60
-echo "   Checking execution status..."
+echo "Step 4: Wait for terminal state..."
+FINAL_STATUS=$(wait_for_terminal "$EXEC_ARN" 900)
 
-STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXEC_ARN" --query 'status' --output text)
-echo "   Current status: $STATUS"
-
-echo ""
-echo "🔍 Step 4: Verify fallback path executed..."
-if check_fallback_path "$EXEC_ARN"; then
-    echo "✅ TEST 1 PASSED: Timeout fallback worked!"
+if [ "$FINAL_STATUS" != "SUCCEEDED" ]; then
+    fail_test "TEST 1: Timeout Fallback" "Execution ended with $FINAL_STATUS instead of SUCCEEDED"
 else
-    echo "❌ TEST 1 FAILED: Fallback path not detected"
-fi
-
-# Wait for execution to complete or fail
-echo ""
-echo "⏳ Waiting for execution to complete..."
-if wait_for_execution_state "$EXEC_ARN" "SUCCEEDED" 600; then
-    echo "✅ Execution completed successfully"
-else
-    echo "⚠️  Execution did not complete in expected time"
+    echo "Step 5: Verify fallback states were entered..."
+    if ! check_fallback_states "$EXEC_ARN"; then
+        fail_test "TEST 1: Timeout Fallback" "Fallback states not all entered"
+    else
+        echo "Step 6: Verify merged output record count..."
+        JOB_ID=$(job_id_from_exec_arn "$EXEC_ARN")
+        if verify_output "$JOB_ID" $RECORD_COUNT; then
+            pass_test "TEST 1: Timeout Fallback"
+        else
+            fail_test "TEST 1: Timeout Fallback" "Output record count mismatch"
+        fi
+    fi
 fi
 
 restore_normal_config
@@ -157,84 +206,76 @@ restore_normal_config
 # TEST 2: Stuck Job Alarm Fallback
 # =============================================================================
 echo ""
-echo "═══════════════════════════════════════════════════════════════"
+echo "==================================================================="
 echo "TEST 2: Stuck Job Alarm Fallback (CloudWatch alarm trigger)"
-echo "═══════════════════════════════════════════════════════════════"
-echo ""
+echo "==================================================================="
 
-echo "📤 Step 1: Upload test file and start batch job..."
-TEST_FILE="test-alarm-$(date +%s).jsonl"
-aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" > /dev/null 2>&1
-echo "✅ Uploaded: $TEST_FILE"
+RECORD_COUNT=$(input_record_count)
 
-echo ""
-echo "⏳ Step 2: Wait for job to reach InProgress with metrics (90s)..."
+echo "Step 1: Upload sample/input.jsonl ($RECORD_COUNT records)..."
+TEST_KEY="test-alarm-$(date +%s).jsonl"
+aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_KEY" > /dev/null 2>&1
+echo "   Uploaded: $TEST_KEY"
+
 sleep 10
-EXEC_ARN=$(get_latest_execution)
+EXEC_ARN=$(aws stepfunctions list-executions \
+    --state-machine-arn "$STATE_MACHINE_ARN" \
+    --max-results 1 \
+    --output json | jq -r '.executions[0].executionArn')
 echo "   Execution: $EXEC_ARN"
 
-# Wait longer for job to populate metrics
-sleep 80
+echo "Step 2: Wait 90s for batch job to reach InProgress and emit metrics..."
+sleep 90
 
-# Check if execution is running
 STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXEC_ARN" --query 'status' --output text)
 if [ "$STATUS" != "RUNNING" ]; then
-    echo "⚠️  Execution not running, skipping alarm test"
+    fail_test "TEST 2: Alarm Fallback" "Execution not RUNNING after 90s (status: $STATUS)"
 else
-    # Verify job has metrics populated
-    JOB_ID=$(echo "$EXEC_ARN" | grep -oE '[a-f0-9-]{36}$')
-    JOB_ARN=$(aws dynamodb get-item \
-        --table-name "$JOBS_TABLE" \
-        --key "{\"JobId\":{\"S\":\"$JOB_ID\"}}" \
-        --output json | jq -r '.Item.BedrockJobArn.S')
-
-    if [ "$JOB_ARN" != "null" ] && [ -n "$JOB_ARN" ]; then
-        RECORD_COUNT=$(aws bedrock get-model-invocation-job \
-            --job-identifier "$JOB_ARN" \
-            --query 'inputDataConfig.s3InputDataConfig.recordCount' \
-            --output text 2>/dev/null || echo "0")
-        echo "   Job has $RECORD_COUNT records (metrics populated)"
-    fi
-
-    echo ""
-    echo "🚨 Step 3: Manually trigger CloudWatch alarm..."
+    echo "Step 3: Trigger CloudWatch alarm to simulate stuck job..."
     aws cloudwatch set-alarm-state \
         --alarm-name "$ALARM_NAME" \
         --state-value ALARM \
         --state-reason "Integration test: simulating stuck job" > /dev/null 2>&1
-    echo "✅ Alarm triggered"
+    echo "   Alarm triggered"
 
-    echo ""
-    echo "⏳ Step 4: Wait for Trigger Lambda to process alarm (60s)..."
-    sleep 60
+    echo "Step 4: Wait for terminal state..."
+    FINAL_STATUS=$(wait_for_terminal "$EXEC_ARN" 900)
 
-    echo ""
-    echo "🔍 Step 5: Verify fallback was triggered..."
-    if check_fallback_path "$EXEC_ARN"; then
-        echo "✅ TEST 2 PASSED: Alarm fallback worked!"
-    else
-        echo "❌ TEST 2 FAILED: Fallback path not detected"
-    fi
-
-    # Reset alarm
-    echo ""
-    echo "🔄 Resetting alarm to OK state..."
+    # Reset alarm regardless of outcome
     aws cloudwatch set-alarm-state \
         --alarm-name "$ALARM_NAME" \
         --state-value OK \
         --state-reason "Integration test complete" > /dev/null 2>&1
+
+    if [ "$FINAL_STATUS" != "SUCCEEDED" ]; then
+        fail_test "TEST 2: Alarm Fallback" "Execution ended with $FINAL_STATUS instead of SUCCEEDED"
+    else
+        echo "Step 5: Verify fallback states were entered..."
+        if ! check_fallback_states "$EXEC_ARN"; then
+            fail_test "TEST 2: Alarm Fallback" "Fallback states not all entered"
+        else
+            echo "Step 6: Verify merged output record count..."
+            JOB_ID=$(job_id_from_exec_arn "$EXEC_ARN")
+            if verify_output "$JOB_ID" $RECORD_COUNT; then
+                pass_test "TEST 2: Alarm Fallback"
+            else
+                fail_test "TEST 2: Alarm Fallback" "Output record count mismatch"
+            fi
+        fi
+    fi
 fi
 
 # =============================================================================
 # TEST 3: Failed Job Fallback
 # =============================================================================
 echo ""
-echo "═══════════════════════════════════════════════════════════════"
-echo "TEST 3: Failed Job Fallback (EventBridge event trigger)"
-echo "═══════════════════════════════════════════════════════════════"
-echo ""
+echo "==================================================================="
+echo "TEST 3: Failed Job Fallback (EventBridge terminal state)"
+echo "==================================================================="
 
-echo "🔒 Step 1: Temporarily deny InvokeModel permission..."
+RECORD_COUNT=$(input_record_count)
+
+echo "Step 1: Temporarily deny InvokeModel permission on Bedrock service role..."
 aws iam put-role-policy \
     --role-name bedrock-batch-sla-service-role \
     --policy-name TestDenyInvokeModel \
@@ -246,93 +287,99 @@ aws iam put-role-policy \
             "Resource": "*"
         }]
     }' > /dev/null 2>&1
-echo "✅ Permission denied (temporary)"
+echo "   Permission denied (temporary)"
 
-echo ""
-echo "📤 Step 2: Upload test file (will fail during processing)..."
-TEST_FILE="test-failed-$(date +%s).jsonl"
-aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" > /dev/null 2>&1
-echo "✅ Uploaded: $TEST_FILE"
+echo "Step 2: Upload sample/input.jsonl (batch job will fail due to denied InvokeModel)..."
+TEST_KEY="test-failed-$(date +%s).jsonl"
+aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_KEY" > /dev/null 2>&1
+echo "   Uploaded: $TEST_KEY"
 
-echo ""
-echo "⏳ Step 3: Poll until job fails (max 10 minutes)..."
 sleep 10
-EXEC_ARN=$(get_latest_execution)
+EXEC_ARN=$(aws stepfunctions list-executions \
+    --state-machine-arn "$STATE_MACHINE_ARN" \
+    --max-results 1 \
+    --output json | jq -r '.executions[0].executionArn')
 echo "   Execution: $EXEC_ARN"
+JOB_ID=$(job_id_from_exec_arn "$EXEC_ARN")
 
-JOB_ID=$(echo "$EXEC_ARN" | grep -oE '[a-f0-9-]{36}$')
-echo "   Job ID: $JOB_ID"
-
-echo ""
-echo "🔍 Step 4: Monitoring job status until Failed..."
+echo "Step 3: Poll Bedrock until job reaches Failed state (max 10 min)..."
 JOB_FAILED=false
-for i in {1..40}; do
+for i in $(seq 1 40); do
     JOB_ARN=$(aws dynamodb get-item \
         --table-name "$JOBS_TABLE" \
         --key "{\"JobId\":{\"S\":\"$JOB_ID\"}}" \
-        --output json 2>/dev/null | jq -r '.Item.BedrockJobArn.S')
+        --output json 2>/dev/null | jq -r '.Item.BedrockJobArn.S // empty')
 
-    if [ "$JOB_ARN" != "null" ] && [ -n "$JOB_ARN" ] && [ "$JOB_ARN" != "None" ]; then
+    if [ -n "$JOB_ARN" ]; then
         BEDROCK_STATUS=$(aws bedrock get-model-invocation-job \
             --job-identifier "$JOB_ARN" \
             --query 'status' \
             --output text 2>/dev/null || echo "UNKNOWN")
-
         echo "   [$i] Bedrock job status: $BEDROCK_STATUS"
-
         if [ "$BEDROCK_STATUS" = "Failed" ]; then
-            echo "✅ Job failed as expected!"
+            echo "   Batch job failed as expected"
             JOB_FAILED=true
             break
-        elif [ "$BEDROCK_STATUS" = "Completed" ]; then
-            echo "⚠️  Job completed (should have failed due to denied permissions)"
+        elif [[ "$BEDROCK_STATUS" =~ ^(Completed|Stopped|PartiallyCompleted|Expired)$ ]]; then
+            echo "   Unexpected terminal state: $BEDROCK_STATUS"
             break
         fi
     else
-        echo "   [$i] Waiting for job ARN to be recorded..."
+        echo "   [$i] Waiting for job ARN..."
     fi
-
     sleep 15
 done
 
-if [ "$JOB_FAILED" = true ]; then
-    echo ""
-    echo "⏳ Waiting for EventBridge to trigger fallback (60s)..."
-    sleep 60
-
-    echo ""
-    echo "🔍 Step 5: Verify fallback was triggered..."
-    if check_fallback_path "$EXEC_ARN"; then
-        echo "✅ TEST 3 PASSED: Failed job fallback worked!"
-    else
-        echo "❌ TEST 3 FAILED: Fallback path not detected"
-    fi
-else
-    echo "❌ TEST 3 FAILED: Job did not fail within timeout"
-fi
-
-echo ""
-echo "🔓 Step 6: Restore InvokeModel permission..."
+# Restore permissions before checking results (regardless of outcome)
+echo "Step 4: Restore InvokeModel permission..."
 aws iam delete-role-policy \
     --role-name bedrock-batch-sla-service-role \
     --policy-name TestDenyInvokeModel > /dev/null 2>&1
-echo "✅ Permissions restored"
+echo "   Permissions restored"
+
+if [ "$JOB_FAILED" != "true" ]; then
+    fail_test "TEST 3: Failed Job Fallback" "Batch job did not reach Failed state within timeout"
+else
+    echo "Step 5: Wait for terminal state (EventBridge → Resume Lambda → fallback → merge)..."
+    FINAL_STATUS=$(wait_for_terminal "$EXEC_ARN" 900)
+
+    if [ "$FINAL_STATUS" != "SUCCEEDED" ]; then
+        fail_test "TEST 3: Failed Job Fallback" "Execution ended with $FINAL_STATUS instead of SUCCEEDED"
+    else
+        echo "Step 6: Verify fallback states were entered..."
+        if ! check_fallback_states "$EXEC_ARN"; then
+            fail_test "TEST 3: Failed Job Fallback" "Fallback states not all entered"
+        else
+            echo "Step 7: Verify merged output record count..."
+            if verify_output "$JOB_ID" $RECORD_COUNT; then
+                pass_test "TEST 3: Failed Job Fallback"
+            else
+                fail_test "TEST 3: Failed Job Fallback" "Output record count mismatch"
+            fi
+        fi
+    fi
+fi
 
 # =============================================================================
 # Summary
 # =============================================================================
 echo ""
-echo "═══════════════════════════════════════════════════════════════"
+echo "==================================================================="
 echo "TEST SUMMARY"
-echo "═══════════════════════════════════════════════════════════════"
+echo "==================================================================="
 echo ""
-echo "✅ Test 1: Timeout Fallback - Check execution logs"
-echo "⚠️  Test 2: Alarm Fallback - Check execution logs"
-echo "⚠️  Test 3: Failed Job Fallback - Check execution logs"
+echo "  Passed: $TESTS_PASSED"
+echo "  Failed: $TESTS_FAILED"
 echo ""
-echo "📊 View executions:"
-echo "https://console.aws.amazon.com/states/home?region=$REGION#/statemachines/view/$STATE_MACHINE_ARN"
+echo "View executions:"
+echo "  https://console.aws.amazon.com/states/home?region=${REGION}#/statemachines/view/${STATE_MACHINE_ARN}"
 echo ""
-echo "💡 Note: Some fallback paths may take additional time to complete."
-echo "   Check the Step Functions console for full execution details."
-echo ""
+
+if [ $TESTS_FAILED -gt 0 ]; then
+    echo "FAILED tests:"
+    echo -e "$FAILED_TESTS"
+    echo ""
+    exit 1
+fi
+
+exit 0

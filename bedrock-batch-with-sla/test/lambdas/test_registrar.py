@@ -7,6 +7,10 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../lambdas/registrar'))
 
+os.environ.setdefault('JOBS_TABLE_NAME', 'test-jobs-table')
+os.environ.setdefault('STATE_MACHINE_ARN', 'arn:aws:states:us-east-1:123456789012:stateMachine:test-machine')
+os.environ.setdefault('OUTPUT_BUCKET_NAME', 'test-output-bucket')
+os.environ.setdefault('MODEL_ID', 'test-model-id')
 import index
 
 class TestRegistrarLambda(unittest.TestCase):

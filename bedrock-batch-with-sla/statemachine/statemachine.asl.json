@@ -202,7 +202,15 @@
             "Resource": "arn:aws:states:::bedrock:invokeModel",
             "Parameters": {
               "ModelId": "${ModelId}",
-              "Body.$": "$.modelInput"
+              "Body": {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 1024,
+                "messages.$": "$.modelInput.messages"
+              }
+            },
+            "ResultSelector": {
+              "recordId.$": "$$.Execution.Input.recordId",
+              "body.$": "$.Body"
             },
             "ResultPath": "$.modelOutput",
             "Retry": [
@@ -245,9 +253,6 @@
           "Bucket": "${OutputBucket}",
           "Key.$": "$.reconcileResult.unprocessedKey"
         }
-      },
-      "ItemBatcher": {
-        "MaxItemsPerBatch": 10
       },
       "ToleratedFailurePercentage": 5,
       "ResultWriter": {

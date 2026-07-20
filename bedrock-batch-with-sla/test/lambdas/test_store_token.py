@@ -8,6 +8,8 @@ from datetime import datetime
 # Add lambdas directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../lambdas/store-token'))
 
+os.environ.setdefault('JOBS_TABLE_NAME', 'test-jobs-table')
+os.environ.setdefault('MODEL_ID', 'test-model')
 import index
 
 class TestStoreTokenLambda(unittest.TestCase):
