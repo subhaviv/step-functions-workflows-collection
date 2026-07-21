@@ -1,5 +1,5 @@
 {
-    "title": "Bedrock Batch Inference with On-Demand SLA Fallback",
+    "title": "Amazon Bedrock Batch Inference with On-Demand SLA Fallback",
     "description": "Runs Amazon Bedrock batch inference as the primary cost-effective path, with automatic fallback to on-demand inference using a Distributed Map when the SLA deadline is at risk. Uses the callback (task token) pattern to suspend execution cheaply while waiting for the batch job, and the saga pattern to ensure a clean terminal state on any failure.",
     "language": "Python",
     "simplicity": "3 - Application",
