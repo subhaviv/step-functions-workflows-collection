@@ -66,20 +66,16 @@ def handler(event, context):
         processed_record_ids = set()
         if processed_count > 0:
             try:
-                # List all output files in the batch output directory
                 output_prefix_clean = output_prefix.rstrip('/')
-                response = s3.list_objects_v2(
-                    Bucket=output_bucket,
-                    Prefix=output_prefix_clean
-                )
-
-                for obj in response.get('Contents', []):
-                    key = obj['Key']
-                    if key.endswith('.jsonl.out'):
-                        output_records = read_jsonl_from_s3(output_bucket, key)
-                        for rec in output_records:
-                            if 'recordId' in rec:
-                                processed_record_ids.add(rec['recordId'])
+                paginator = s3.get_paginator('list_objects_v2')
+                for page in paginator.paginate(Bucket=output_bucket, Prefix=output_prefix_clean):
+                    for obj in page.get('Contents', []):
+                        key = obj['Key']
+                        if key.endswith('.jsonl.out'):
+                            output_records = read_jsonl_from_s3(output_bucket, key)
+                            for rec in output_records:
+                                if 'recordId' in rec:
+                                    processed_record_ids.add(rec['recordId'])
 
                 logger.info(json.dumps({
                     'event': 'output_loaded',

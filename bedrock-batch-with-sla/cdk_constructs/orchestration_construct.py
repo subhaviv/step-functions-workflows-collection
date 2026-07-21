@@ -1,5 +1,6 @@
 import json
 import os
+import aws_cdk as cdk
 import aws_cdk.aws_stepfunctions as sfn
 import aws_cdk.aws_iam as iam
 import aws_cdk.aws_lambda as lambda_
@@ -68,10 +69,11 @@ class OrchestrationConstruct(Construct):
             resources=[f"{output_bucket.bucket_arn}/*"],
         ))
 
+        account_id = cdk.Stack.of(self).account
         self.execution_role.add_to_policy(iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
             actions=["states:StartExecution"],
-            resources=["*"],
+            resources=[f"arn:aws:states:{region}:{account_id}:stateMachine:*"],
         ))
 
         try:
@@ -101,6 +103,9 @@ class OrchestrationConstruct(Construct):
                 },
             })
 
+        # L1 CfnStateMachine used instead of L2 StateMachine because definition_substitutions
+        # only accepts str values (Fn::Sub), which would quote numeric fields like
+        # TimeoutSeconds and MaxConcurrency, failing Step Functions schema validation.
         self.state_machine = sfn.CfnStateMachine(
             self, "StateMachine",
             state_machine_name="bedrock-batch-sla-fallback",

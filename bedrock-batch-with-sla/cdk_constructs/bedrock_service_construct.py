@@ -1,3 +1,4 @@
+import aws_cdk as cdk
 import aws_cdk.aws_iam as iam
 import aws_cdk.aws_s3 as s3
 from constructs import Construct
@@ -5,8 +6,11 @@ from constructs import Construct
 
 class BedrockServiceConstruct(Construct):
     def __init__(self, scope: Construct, construct_id: str,
-                 input_bucket: s3.IBucket, output_bucket: s3.IBucket) -> None:
+                 input_bucket: s3.IBucket, output_bucket: s3.IBucket,
+                 model_id: str) -> None:
         super().__init__(scope, construct_id)
+
+        region = cdk.Stack.of(self).region
 
         self.service_role = iam.Role(
             self, "BedrockServiceRole",
@@ -27,10 +31,15 @@ class BedrockServiceConstruct(Construct):
             resources=[output_bucket.bucket_arn, f"{output_bucket.bucket_arn}/*"],
         ))
 
+        # Cross-region inference profiles use inference-profile ARN; base models use foundation-model ARN
+        if "." in model_id:
+            model_resource = f"arn:aws:bedrock:{region}:{cdk.Stack.of(self).account}:inference-profile/{model_id}"
+        else:
+            model_resource = f"arn:aws:bedrock:{region}::foundation-model/{model_id}"
         self.service_role.add_to_policy(iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
             actions=["bedrock:InvokeModel"],
-            resources=["*"],
+            resources=[model_resource],
         ))
 
         self.service_role_arn = self.service_role.role_arn

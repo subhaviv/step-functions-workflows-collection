@@ -70,29 +70,17 @@ def handler(event, context):
             }
         )
 
-        # Resume state machine with status
+        # Resume state machine — CheckOutcome routes based on status
         output = {'status': status, 'bedrockJobArn': bedrock_job_arn}
-
-        if status == 'Completed':
-            sfn.send_task_success(
-                taskToken=task_token,
-                output=json.dumps(output)
-            )
-            logger.info(json.dumps({
-                'event': 'task_success_sent',
-                'job_id': job_id,
-                'status': status
-            }))
-        else:
-            sfn.send_task_success(
-                taskToken=task_token,
-                output=json.dumps(output)
-            )
-            logger.info(json.dumps({
-                'event': 'task_resumed_for_fallback',
-                'job_id': job_id,
-                'status': status
-            }))
+        sfn.send_task_success(
+            taskToken=task_token,
+            output=json.dumps(output)
+        )
+        logger.info(json.dumps({
+            'event': 'task_success_sent',
+            'job_id': job_id,
+            'status': status
+        }))
 
         return {
             'statusCode': 200,
