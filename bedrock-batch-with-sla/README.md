@@ -94,8 +94,6 @@ Default: 360 min SLA − 30 min drain − 10 min buffer = **320 min batch cutoff
 
 ## Image
 
-Provide an exported .png of the workflow from [Workflow Studio](https://docs.aws.amazon.com/step-functions/latest/dg/workflow-studio.html) and add here.
-
 ![image](./resources/statemachine.png)
 
 ## Testing
@@ -108,7 +106,7 @@ Each line of the JSONL file uploaded to the input S3 bucket must have `recordId`
 {"recordId": "rec-001", "modelInput": {"messages": [{"role": "user", "content": [{"text": "What is the capital of France?"}]}]}}
 ```
 
-A ready-to-use `sample/input.jsonl` is included (requires minimum 1,000 records; some models require 10,000+).
+A ready-to-use `sample/input.jsonl` is included. Note: Bedrock batch inference enforces a minimum number of records per job that varies by model — check the [Bedrock batch inference quotas](https://docs.aws.amazon.com/bedrock/latest/userguide/batch-inference-data.html) for the exact limit for your model.
 
 ### Trigger a job
 
@@ -127,7 +125,7 @@ aws s3 cp sample/input.jsonl s3://<INPUT_BUCKET>/input.jsonl
 ### Unit and integration tests
 
 ```bash
-# Lambda unit tests
+# Lambda function unit tests
 cd test/lambdas && python -m unittest discover
 
 # All three fallback scenarios (~10-15 min)
@@ -157,6 +155,6 @@ bash test/integration/test-fallback-scenarios.sh
     ```
 
 ----
-Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 SPDX-License-Identifier: MIT-0
