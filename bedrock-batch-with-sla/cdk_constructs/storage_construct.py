@@ -32,7 +32,7 @@ class StorageConstruct(Construct):
             partition_key=dynamodb.Attribute(name="JobId", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=removal_policy,
-            time_to_live_attribute="TTL",
+            # No TTL — retain job records for analytics. Add based on your retention policy.
             point_in_time_recovery=False,
         )
 
