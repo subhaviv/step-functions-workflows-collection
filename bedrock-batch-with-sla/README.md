@@ -57,7 +57,7 @@ Important: this application uses various AWS services and there are costs associ
 
 ```
 S3 input (.jsonl)
-  └─ Registrar λ
+  └─ Registrar Lambda function
        └─ Step Functions
             ├─ SubmitBatchJob → RecordJob → WaitForBatchCompletion (task token)
             │
@@ -79,8 +79,8 @@ The workflow uses two patterns:
 | Trigger | Mechanism |
 |---------|-----------|
 | Timeout | `WaitForBatchCompletion` TimeoutSeconds expires |
-| Stuck job | CloudWatch alarm (pending > 0, tokens == 0 for 30 min) → SNS → Trigger λ → `SendTaskSuccess` |
-| Failed job | EventBridge → Resume λ → `SendTaskSuccess` |
+| Stuck job | CloudWatch alarm (pending > 0, tokens == 0 for 30 min) → SNS → Trigger Lambda function → `SendTaskSuccess` |
+| Failed job | EventBridge → Resume Lambda function → `SendTaskSuccess` |
 
 All three converge on the same fallback path.
 
