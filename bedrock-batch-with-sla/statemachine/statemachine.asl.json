@@ -1,5 +1,5 @@
 {
-  "Comment": "Bedrock Batch Inference with On-Demand SLA Fallback",
+  "Comment": "Amazon Bedrock Batch Inference with On-Demand SLA Fallback",
   "StartAt": "SubmitBatchJob",
   "States": {
     "SubmitBatchJob": {

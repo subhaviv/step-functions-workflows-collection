@@ -1,8 +1,8 @@
-# Bedrock Batch Inference with On-Demand SLA Fallback
+# Amazon Bedrock Batch Inference with On-Demand SLA Fallback
 
 This workflow runs Amazon Bedrock **batch inference** as the primary (cost-effective) path, with **automatic fallback to on-demand inference** when an SLA deadline is at risk.
 
-Learn more about this workflow at Step Functions workflows collection: https://serverlessland.com/workflows/bedrock-batch-with-sla
+Learn more about this workflow at the AWS Step Functions workflows collection: https://serverlessland.com/workflows/bedrock-batch-with-sla
 
 Important: this application uses various AWS services and there are costs associated with these services after the Free Tier usage - please see the [AWS Pricing page](https://aws.amazon.com/pricing/) for details. You are responsible for any AWS costs incurred. No warranty is implied in this example.
 
@@ -12,7 +12,7 @@ Important: this application uses various AWS services and there are costs associ
 * [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) installed and configured
 * [Git Installed](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
 * [AWS CDK CLI](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html) installed (`npm install -g aws-cdk`)
-* Python 3.12+
+* Python 3.13+
 
 ## Deployment Instructions
 
@@ -56,9 +56,9 @@ Important: this application uses various AWS services and there are costs associ
 ## How it works
 
 ```
-S3 input (.jsonl)
+Amazon S3 input (.jsonl)
   └─ Registrar Lambda function
-       └─ Step Functions
+       └─ AWS Step Functions
             ├─ SubmitBatchJob → RecordJob → WaitForBatchCompletion (task token)
             │
             ├─ Happy path: batch completes → DownstreamProcessing → Success
@@ -70,7 +70,7 @@ S3 input (.jsonl)
 
 The workflow uses two patterns:
 
-**Callback Pattern (Task Token)** — Instead of polling Bedrock, Step Functions suspends and hands out a task token. The token is saved to DynamoDB. When the batch job finishes (or gets stuck), an external Lambda retrieves the token and calls `SendTaskSuccess` to resume the execution — at zero compute cost while waiting.
+**Callback Pattern (Task Token)** — Instead of polling Bedrock, Step Functions suspends and hands out a task token. The token is saved to Amazon DynamoDB. When the batch job finishes (or gets stuck), an external Lambda function retrieves the token and calls `SendTaskSuccess` to resume the execution — at zero compute cost while waiting.
 
 **Saga Pattern** — Each step has a compensating action so the system always reaches a clean terminal state. If `StopBatchJob` fails (job was already stopped), execution continues to `ReconcileRecords`.
 
@@ -79,8 +79,8 @@ The workflow uses two patterns:
 | Trigger | Mechanism |
 |---------|-----------|
 | Timeout | `WaitForBatchCompletion` TimeoutSeconds expires |
-| Stuck job | CloudWatch alarm (pending > 0, tokens == 0 for 30 min) → SNS → Trigger Lambda function → `SendTaskSuccess` |
-| Failed job | EventBridge → Resume Lambda function → `SendTaskSuccess` |
+| Stuck job | Amazon CloudWatch alarm (pending > 0, tokens == 0 for 30 min) → Amazon SNS → Trigger Lambda function → `SendTaskSuccess` |
+| Failed job | Amazon EventBridge → Resume Lambda function → `SendTaskSuccess` |
 
 All three converge on the same fallback path.
 

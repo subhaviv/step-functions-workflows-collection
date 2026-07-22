@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
 import boto3
 
 # Add parent directory to path for shared modules

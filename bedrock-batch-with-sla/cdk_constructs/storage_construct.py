@@ -44,13 +44,6 @@ class StorageConstruct(Construct):
         )
 
         self.jobs_table.add_global_secondary_index(
-            index_name="ModelIdIndex",
-            partition_key=dynamodb.Attribute(name="ModelId", type=dynamodb.AttributeType.STRING),
-            sort_key=dynamodb.Attribute(name="CreatedAt", type=dynamodb.AttributeType.STRING),
-            projection_type=dynamodb.ProjectionType.ALL,
-        )
-
-        self.jobs_table.add_global_secondary_index(
             index_name="BedrockJobArnIndex",
             partition_key=dynamodb.Attribute(name="BedrockJobArn", type=dynamodb.AttributeType.STRING),
             projection_type=dynamodb.ProjectionType.ALL,

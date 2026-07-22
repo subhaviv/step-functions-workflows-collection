@@ -64,7 +64,7 @@ class LambdaComputeConstruct(Construct):
         ))
 
         code = lambda_.Code.from_asset(LAMBDAS_DIR)
-        runtime = lambda_.Runtime.PYTHON_3_12
+        runtime = lambda_.Runtime.PYTHON_3_13
 
         self.registrar_fn = lambda_.Function(
             self, "RegistrarFunction",
