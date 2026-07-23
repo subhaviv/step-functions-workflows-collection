@@ -5,9 +5,11 @@ import unittest
 from unittest.mock import patch, MagicMock, call
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../lambdas/reconcile'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../lambdas'))
 
 os.environ.setdefault('OUTPUT_BUCKET_NAME', 'test-output-bucket')
 import index
+from common.s3_utils import parse_s3_uri
 
 
 def make_paginator(pages):
@@ -122,12 +124,12 @@ class TestReconcile(unittest.TestCase):
 class TestReconcileHelpers(unittest.TestCase):
 
     def test_parse_s3_uri(self):
-        bucket, key = index.parse_s3_uri('s3://my-bucket/path/to/file.jsonl')
+        bucket, key = parse_s3_uri('s3://my-bucket/path/to/file.jsonl')
         self.assertEqual(bucket, 'my-bucket')
         self.assertEqual(key, 'path/to/file.jsonl')
 
     def test_parse_s3_uri_no_key(self):
-        bucket, key = index.parse_s3_uri('s3://my-bucket')
+        bucket, key = parse_s3_uri('s3://my-bucket')
         self.assertEqual(bucket, 'my-bucket')
         self.assertEqual(key, '')
 

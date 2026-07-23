@@ -7,6 +7,7 @@ import boto3
 # Add parent directory to path for shared modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from common.boto_config import RETRY_CONFIG
+from common.s3_utils import parse_s3_uri, read_json_from_s3, read_jsonl_from_s3, write_jsonl_to_s3
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -39,7 +40,7 @@ def handler(event, context):
                 for obj in page.get('Contents', []):
                     key = obj['Key']
                     if key.endswith('.jsonl.out'):
-                        records = read_jsonl_from_s3(output_bucket, key)
+                        records = read_jsonl_from_s3(s3, output_bucket, key)
                         for rec in records:
                             if 'recordId' in rec:
                                 batch_results[rec['recordId']] = rec
@@ -66,7 +67,7 @@ def handler(event, context):
                     key = obj['Key']
                     if not key.endswith('.json') or key.endswith('manifest.json'):
                         continue
-                    executions = read_json_from_s3(OUTPUT_BUCKET_NAME, key)
+                    executions = read_json_from_s3(s3, OUTPUT_BUCKET_NAME, key)
                     if not isinstance(executions, list):
                         executions = [executions]
                     for execution in executions:
@@ -107,7 +108,7 @@ def handler(event, context):
 
         # Write merged output (always write so downstream consumers can rely on the key existing)
         merged_key = f"merged-output/{job_id}/results.jsonl"
-        write_jsonl_to_s3(OUTPUT_BUCKET_NAME, merged_key, list(merged_results.values()))
+        write_jsonl_to_s3(s3, OUTPUT_BUCKET_NAME, merged_key, list(merged_results.values()))
 
         return {
             'statusCode': 200,
@@ -126,26 +127,3 @@ def handler(event, context):
         raise
 
 
-def parse_s3_uri(uri):
-    """Parse s3://bucket/key into bucket and key."""
-    parts = uri.replace('s3://', '').split('/', 1)
-    return parts[0], parts[1] if len(parts) > 1 else ''
-
-
-def read_json_from_s3(bucket, key):
-    """Read JSON file from S3."""
-    response = s3.get_object(Bucket=bucket, Key=key)
-    return json.loads(response['Body'].read().decode('utf-8'))
-
-
-def read_jsonl_from_s3(bucket, key):
-    """Read JSONL file from S3."""
-    response = s3.get_object(Bucket=bucket, Key=key)
-    content = response['Body'].read().decode('utf-8')
-    return [json.loads(line) for line in content.strip().split('\n') if line]
-
-
-def write_jsonl_to_s3(bucket, key, records):
-    """Write JSONL file to S3."""
-    content = '\n'.join(json.dumps(rec) for rec in records)
-    s3.put_object(Bucket=bucket, Key=key, Body=content.encode('utf-8'))

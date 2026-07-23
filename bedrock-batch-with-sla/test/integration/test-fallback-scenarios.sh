@@ -5,7 +5,11 @@ set -e
 # Tests all three fallback scenarios
 
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_PROFILE_FLAG=""
+if [ -n "${AWS_PROFILE}" ]; then
+    AWS_PROFILE_FLAG="--profile ${AWS_PROFILE}"
+fi
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text ${AWS_PROFILE_FLAG})
 STATE_MACHINE_ARN="arn:aws:states:${REGION}:${ACCOUNT_ID}:stateMachine:bedrock-batch-sla-fallback"
 INPUT_BUCKET="bedrock-batch-sla-input-${ACCOUNT_ID}"
 OUTPUT_BUCKET="bedrock-batch-sla-output-${ACCOUNT_ID}"
@@ -40,7 +44,7 @@ wait_for_execution_state() {
         STATUS=$(aws stepfunctions describe-execution \
             --execution-arn "$exec_arn" \
             --query 'status' \
-            --output text 2>/dev/null || echo "UNKNOWN")
+            --output text ${AWS_PROFILE_FLAG} 2>/dev/null || echo "UNKNOWN")
 
         if [ "$STATUS" = "$expected_state" ]; then
             echo "✅ Execution reached $expected_state"
@@ -62,7 +66,7 @@ get_latest_execution() {
     aws stepfunctions list-executions \
         --state-machine-arn "$STATE_MACHINE_ARN" \
         --max-results 1 \
-        --output json | jq -r '.executions[0].executionArn'
+        --output json ${AWS_PROFILE_FLAG} | jq -r '.executions[0].executionArn'
 }
 
 check_fallback_path() {
@@ -71,7 +75,7 @@ check_fallback_path() {
 
     HISTORY=$(aws stepfunctions get-execution-history \
         --execution-arn "$exec_arn" \
-        --output json)
+        --output json ${AWS_PROFILE_FLAG})
 
     # Check for key fallback states
     FALLBACK_ENTRY=$(echo "$HISTORY" | jq '[.events[] | select(.stateEnteredEventDetails.name == "FallbackEntry")] | length')
@@ -99,7 +103,7 @@ check_fallback_path() {
 
 restore_normal_config() {
     echo "🔄 Restoring normal configuration..."
-    npx cdk deploy --require-approval never > /dev/null 2>&1
+    npx cdk deploy --require-approval never --ci ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 }
 
 # =============================================================================
@@ -112,13 +116,13 @@ echo "════════════════════════�
 echo ""
 
 echo "📝 Step 1: Deploy with very short SLA (2 minutes)..."
-npx cdk deploy -c slaTotalMinutes=2 --require-approval never > /dev/null 2>&1
+npx cdk deploy -c slaTotalMinutes=2 --require-approval never --ci ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 echo "✅ Deployed with 2-minute SLA"
 
 echo ""
 echo "📤 Step 2: Upload test file..."
 TEST_FILE="test-timeout-$(date +%s).jsonl"
-aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" > /dev/null 2>&1
+aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 echo "✅ Uploaded: $TEST_FILE"
 
 echo ""
@@ -127,11 +131,11 @@ sleep 10
 EXEC_ARN=$(get_latest_execution)
 echo "   Execution: $EXEC_ARN"
 
-# Wait up to 120 seconds for timeout to trigger fallback
+# Wait longer for job to populate metrics
 sleep 60
 echo "   Checking execution status..."
 
-STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXEC_ARN" --query 'status' --output text)
+STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXEC_ARN" --query 'status' --output text ${AWS_PROFILE_FLAG})
 echo "   Current status: $STATUS"
 
 echo ""
@@ -164,7 +168,7 @@ echo ""
 
 echo "📤 Step 1: Upload test file and start batch job..."
 TEST_FILE="test-alarm-$(date +%s).jsonl"
-aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" > /dev/null 2>&1
+aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 echo "✅ Uploaded: $TEST_FILE"
 
 echo ""
@@ -177,7 +181,7 @@ echo "   Execution: $EXEC_ARN"
 sleep 80
 
 # Check if execution is running
-STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXEC_ARN" --query 'status' --output text)
+STATUS=$(aws stepfunctions describe-execution --execution-arn "$EXEC_ARN" --query 'status' --output text ${AWS_PROFILE_FLAG})
 if [ "$STATUS" != "RUNNING" ]; then
     echo "⚠️  Execution not running, skipping alarm test"
 else
@@ -186,13 +190,13 @@ else
     JOB_ARN=$(aws dynamodb get-item \
         --table-name "$JOBS_TABLE" \
         --key "{\"JobId\":{\"S\":\"$JOB_ID\"}}" \
-        --output json | jq -r '.Item.BedrockJobArn.S')
+        --output json ${AWS_PROFILE_FLAG} | jq -r '.Item.BedrockJobArn.S')
 
     if [ "$JOB_ARN" != "null" ] && [ -n "$JOB_ARN" ]; then
         RECORD_COUNT=$(aws bedrock get-model-invocation-job \
             --job-identifier "$JOB_ARN" \
             --query 'inputDataConfig.s3InputDataConfig.recordCount' \
-            --output text 2>/dev/null || echo "0")
+            --output text ${AWS_PROFILE_FLAG} 2>/dev/null || echo "0")
         echo "   Job has $RECORD_COUNT records (metrics populated)"
     fi
 
@@ -201,7 +205,7 @@ else
     aws cloudwatch set-alarm-state \
         --alarm-name "$ALARM_NAME" \
         --state-value ALARM \
-        --state-reason "Integration test: simulating stuck job" > /dev/null 2>&1
+        --state-reason "Integration test: simulating stuck job" ${AWS_PROFILE_FLAG} > /dev/null 2>&1
     echo "✅ Alarm triggered"
 
     echo ""
@@ -222,7 +226,7 @@ else
     aws cloudwatch set-alarm-state \
         --alarm-name "$ALARM_NAME" \
         --state-value OK \
-        --state-reason "Integration test complete" > /dev/null 2>&1
+        --state-reason "Integration test complete" ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 fi
 
 # =============================================================================
@@ -245,13 +249,13 @@ aws iam put-role-policy \
             "Action": "bedrock:InvokeModel",
             "Resource": "*"
         }]
-    }' > /dev/null 2>&1
+    }' ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 echo "✅ Permission denied (temporary)"
 
 echo ""
 echo "📤 Step 2: Upload test file (will fail during processing)..."
 TEST_FILE="test-failed-$(date +%s).jsonl"
-aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" > /dev/null 2>&1
+aws s3 cp sample/input.jsonl "s3://$INPUT_BUCKET/$TEST_FILE" ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 echo "✅ Uploaded: $TEST_FILE"
 
 echo ""
@@ -270,13 +274,13 @@ for i in {1..40}; do
     JOB_ARN=$(aws dynamodb get-item \
         --table-name "$JOBS_TABLE" \
         --key "{\"JobId\":{\"S\":\"$JOB_ID\"}}" \
-        --output json 2>/dev/null | jq -r '.Item.BedrockJobArn.S')
+        --output json ${AWS_PROFILE_FLAG} 2>/dev/null | jq -r '.Item.BedrockJobArn.S')
 
     if [ "$JOB_ARN" != "null" ] && [ -n "$JOB_ARN" ] && [ "$JOB_ARN" != "None" ]; then
         BEDROCK_STATUS=$(aws bedrock get-model-invocation-job \
             --job-identifier "$JOB_ARN" \
             --query 'status' \
-            --output text 2>/dev/null || echo "UNKNOWN")
+            --output text ${AWS_PROFILE_FLAG} 2>/dev/null || echo "UNKNOWN")
 
         echo "   [$i] Bedrock job status: $BEDROCK_STATUS"
 
@@ -315,7 +319,7 @@ echo ""
 echo "🔓 Step 6: Restore InvokeModel permission..."
 aws iam delete-role-policy \
     --role-name bedrock-batch-sla-service-role \
-    --policy-name TestDenyInvokeModel > /dev/null 2>&1
+    --policy-name TestDenyInvokeModel ${AWS_PROFILE_FLAG} > /dev/null 2>&1
 echo "✅ Permissions restored"
 
 # =============================================================================

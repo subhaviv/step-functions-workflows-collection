@@ -39,6 +39,7 @@ class BedrockBatchSlaFallbackStack(cdk.Stack):
             "BedrockService",
             input_bucket=storage.input_bucket,
             output_bucket=storage.output_bucket,
+            model_id=model_id,
         )
 
         # Lambda compute: all 6 Lambda functions with X-Ray tracing

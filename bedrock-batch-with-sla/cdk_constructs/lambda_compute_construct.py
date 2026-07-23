@@ -35,16 +35,44 @@ class LambdaComputeConstruct(Construct):
             ],
         )
 
+        region = cdk.Stack.of(self).region
+        account = cdk.Stack.of(self).account
+
+        # InvokeModel uses inference-profile ARN for cross-region profiles, foundation-model ARN otherwise
+        # CreateModelInvocationJob is scoped to * because cross-region profiles route to foundation
+        # models in any region, and IAM checks that target region's ARN which cannot be predicted at deploy time
+        if model_id.split(".")[0] in ("us", "eu", "ap"):
+            invoke_arn = f"arn:aws:bedrock:{region}:{account}:inference-profile/{model_id}"
+            base_model_id = ".".join(model_id.split(".")[1:])
+        else:
+            invoke_arn = f"arn:aws:bedrock:{region}::foundation-model/{model_id}"
+            base_model_id = model_id
+        batch_job_model_arn = f"arn:aws:bedrock:{region}::foundation-model/{base_model_id}"
+
+        # CreateModelInvocationJob must be scoped to * — AWS prescribes this in the batch inference
+        # permissions guide (docs.aws.amazon.com/bedrock/latest/userguide/batch-inference-permissions.html).
+        # Cross-region profiles route the job to whichever region has capacity, so the target
+        # foundation-model ARN cannot be predicted at deploy time.
+        self.execution_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=["bedrock:CreateModelInvocationJob"],
+            resources=["*"],
+        ))
+
+        self.execution_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=["bedrock:InvokeModel"],
+            resources=[invoke_arn],
+        ))
+
         self.execution_role.add_to_policy(iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
             actions=[
-                "bedrock:CreateModelInvocationJob",
                 "bedrock:GetModelInvocationJob",
                 "bedrock:ListModelInvocationJobs",
                 "bedrock:StopModelInvocationJob",
-                "bedrock:InvokeModel",
             ],
-            resources=["*"],
+            resources=[f"arn:aws:bedrock:{region}:{account}:model-invocation-job/*"],
         ))
 
         self.execution_role.add_to_policy(iam.PolicyStatement(
@@ -59,8 +87,14 @@ class LambdaComputeConstruct(Construct):
 
         self.execution_role.add_to_policy(iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
-            actions=["states:SendTaskSuccess", "states:SendTaskFailure", "states:StartExecution"],
-            resources=["*"],
+            actions=["states:SendTaskSuccess", "states:SendTaskFailure"],
+            resources=[f"arn:aws:states:{region}:{account}:stateMachine:*"],
+        ))
+
+        self.execution_role.add_to_policy(iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=["states:StartExecution"],
+            resources=[f"arn:aws:states:{region}:{account}:stateMachine:*"],
         ))
 
         code = lambda_.Code.from_asset(LAMBDAS_DIR)

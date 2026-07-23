@@ -32,14 +32,28 @@ class BedrockServiceConstruct(Construct):
         ))
 
         # Cross-region inference profiles use inference-profile ARN; base models use foundation-model ARN
-        if "." in model_id:
-            model_resource = f"arn:aws:bedrock:{region}:{cdk.Stack.of(self).account}:inference-profile/{model_id}"
+        if model_id.split(".")[0] in ("us", "eu", "ap"):
+            profile_arn = f"arn:aws:bedrock:{region}:{cdk.Stack.of(self).account}:inference-profile/{model_id}"
+            base_model_id = ".".join(model_id.split(".")[1:])
+            self.service_role.add_to_policy(iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock:InvokeModel"],
+                resources=[profile_arn],
+            ))
+            # Cross-region profiles route to foundation models in destination regions at runtime.
+            # Wildcard region with InferenceProfileArn condition avoids hardcoding destination regions.
+            # See: docs.aws.amazon.com/bedrock/latest/userguide/geographic-cross-region-inference.html
+            self.service_role.add_to_policy(iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock:InvokeModel"],
+                resources=[f"arn:aws:bedrock:*::foundation-model/{base_model_id}"],
+                conditions={"StringEquals": {"bedrock:InferenceProfileArn": profile_arn}},
+            ))
         else:
-            model_resource = f"arn:aws:bedrock:{region}::foundation-model/{model_id}"
-        self.service_role.add_to_policy(iam.PolicyStatement(
-            effect=iam.Effect.ALLOW,
-            actions=["bedrock:InvokeModel"],
-            resources=[model_resource],
-        ))
+            self.service_role.add_to_policy(iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock:InvokeModel"],
+                resources=[f"arn:aws:bedrock:{region}::foundation-model/{model_id}"],
+            ))
 
         self.service_role_arn = self.service_role.role_arn

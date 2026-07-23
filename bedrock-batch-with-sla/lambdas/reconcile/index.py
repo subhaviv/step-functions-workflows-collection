@@ -7,6 +7,7 @@ import boto3
 # Add parent directory to path for shared modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from common.boto_config import RETRY_CONFIG
+from common.s3_utils import parse_s3_uri, read_json_from_s3, read_jsonl_from_s3, write_jsonl_to_s3
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -33,7 +34,7 @@ def handler(event, context):
         output_bucket, output_prefix = parse_s3_uri(output_uri)
 
         # Read input records
-        input_records = read_jsonl_from_s3(input_bucket, input_key)
+        input_records = read_jsonl_from_s3(s3, input_bucket, input_key)
         input_record_ids = {rec['recordId'] for rec in input_records}
 
         logger.info(json.dumps({
@@ -44,7 +45,7 @@ def handler(event, context):
         # Read batch output manifest
         manifest_key = f"{output_prefix.rstrip('/')}/manifest.json.out"
         try:
-            manifest = read_json_from_s3(output_bucket, manifest_key)
+            manifest = read_json_from_s3(s3, output_bucket, manifest_key)
             processed_count = manifest.get('successCount', 0) + manifest.get('errorCount', 0)
 
             logger.info(json.dumps({
@@ -71,7 +72,7 @@ def handler(event, context):
                     for obj in page.get('Contents', []):
                         key = obj['Key']
                         if key.endswith('.jsonl.out'):
-                            output_records = read_jsonl_from_s3(output_bucket, key)
+                            output_records = read_jsonl_from_s3(s3, output_bucket, key)
                             for rec in output_records:
                                 if 'recordId' in rec:
                                     processed_record_ids.add(rec['recordId'])
@@ -100,7 +101,7 @@ def handler(event, context):
         # Write unprocessed records to S3
         unprocessed_key = f"unprocessed/{job_id}/unprocessed.jsonl"
         if unprocessed_records:
-            write_jsonl_to_s3(OUTPUT_BUCKET_NAME, unprocessed_key, unprocessed_records)
+            write_jsonl_to_s3(s3, OUTPUT_BUCKET_NAME, unprocessed_key, unprocessed_records)
 
         return {
             'statusCode': 200,
@@ -118,26 +119,3 @@ def handler(event, context):
         raise
 
 
-def parse_s3_uri(uri):
-    """Parse s3://bucket/key into bucket and key."""
-    parts = uri.replace('s3://', '').split('/', 1)
-    return parts[0], parts[1] if len(parts) > 1 else ''
-
-
-def read_json_from_s3(bucket, key):
-    """Read JSON file from S3."""
-    response = s3.get_object(Bucket=bucket, Key=key)
-    return json.loads(response['Body'].read().decode('utf-8'))
-
-
-def read_jsonl_from_s3(bucket, key):
-    """Read JSONL file from S3."""
-    response = s3.get_object(Bucket=bucket, Key=key)
-    content = response['Body'].read().decode('utf-8')
-    return [json.loads(line) for line in content.strip().split('\n') if line]
-
-
-def write_jsonl_to_s3(bucket, key, records):
-    """Write JSONL file to S3."""
-    content = '\n'.join(json.dumps(rec) for rec in records)
-    s3.put_object(Bucket=bucket, Key=key, Body=content.encode('utf-8'))
